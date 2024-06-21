@@ -41,15 +41,23 @@ def apply_trading_strategy(data, tolerance):
 
     return data, buy_signals, sell_signals
 
-# Simulate trades with updated conditions
-def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
+# Simulate trades with dynamic lot size based on funds usage percentage
+def simulate_trades(data, symbol, tolerance, initial_balance=10000, funds_usage_percentage=100):
     balance = initial_balance
-    initial_invested_balance = initial_balance
     trades = []
     active_trade = None
     trade_type = None
 
     for index, row in data.iterrows():
+        # Calculate the maximum possible lot size based on the funds usage percentage
+        available_funds = balance * (funds_usage_percentage / 100)
+        max_possible_lot_size = available_funds / row['close']
+        
+        if max_possible_lot_size < 1:
+            lot_size = max_possible_lot_size  # If funds are insufficient, use the maximum possible lot size
+        else:
+            lot_size = int(max_possible_lot_size)  # Use integer lot size for trading
+
         if row['position'] == 1 and active_trade is None:
             # Open new buy trade
             buy_price = row['close']
@@ -57,7 +65,8 @@ def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
                 'symbol': symbol,
                 'type': 'Buy',
                 'buy_price': buy_price,
-                'buy_time': row['timestamp']
+                'buy_time': row['timestamp'],
+                'lot_size': lot_size
             }
             trade_type = 'Buy'
         elif row['position'] == -1 and active_trade is None:
@@ -67,13 +76,15 @@ def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
                 'symbol': symbol,
                 'type': 'Sell Short',
                 'sell_short_price': sell_short_price,
-                'sell_short_time': row['timestamp']
+                'sell_short_time': row['timestamp'],
+                'lot_size': lot_size
             }
             trade_type = 'Sell Short'
         elif row['position'] == -1 and active_trade is not None and trade_type == 'Buy':
             # Close buy trade and take sell short trade
             current_price = row['close']
-            balance += lot_size * (current_price - active_trade['buy_price'])
+            profit_loss = lot_size * (current_price - active_trade['buy_price'])
+            balance += profit_loss
             trades.append({
                 'symbol': symbol,
                 'type': 'Buy',
@@ -81,13 +92,23 @@ def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
                 'sell_price': current_price,
                 'buy_time': active_trade['buy_time'],
                 'sell_time': row['timestamp'],
-                'profit_loss': lot_size * (current_price - active_trade['buy_price'])
+                'lot_size': lot_size,
+                'profit_loss': profit_loss
             })
-            active_trade = None
+            active_trade = {
+                'symbol': symbol,
+                'type': 'Sell Short',
+                'sell_short_price': current_price,
+                'sell_short_time': row['timestamp'],
+                'lot_size': lot_size
+            }
+            trade_type = 'Sell Short'
+            
         elif row['position'] == 1 and active_trade is not None and trade_type == 'Sell Short':
             # Close sell short trade and take buy trade
             current_price = row['close']
-            balance += lot_size * (active_trade['sell_short_price'] - current_price)
+            profit_loss = lot_size * (active_trade['sell_short_price'] - current_price)
+            balance += profit_loss
             trades.append({
                 'symbol': symbol,
                 'type': 'Sell Short',
@@ -95,14 +116,23 @@ def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
                 'buy_cover_price': current_price,
                 'sell_short_time': active_trade['sell_short_time'],
                 'buy_cover_time': row['timestamp'],
-                'profit_loss': lot_size * (active_trade['sell_short_price'] - current_price)
+                'lot_size': lot_size,
+                'profit_loss': profit_loss
             })
-            active_trade = None
+            active_trade = {
+                'symbol': symbol,
+                'type': 'Buy',
+                'buy_price': current_price,
+                'buy_time': row['timestamp'],
+                'lot_size': lot_size
+            }
+            trade_type = 'Buy'
 
     # Close any remaining active trade at the last timestamp
     if active_trade is not None:
         if trade_type == 'Buy':
             current_price = data['close'].iloc[-1]
+            profit_loss = lot_size * (current_price - active_trade['buy_price'])
             trades.append({
                 'symbol': symbol,
                 'type': 'Buy',
@@ -110,11 +140,13 @@ def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
                 'sell_price': current_price,
                 'buy_time': active_trade['buy_time'],
                 'sell_time': data['timestamp'].iloc[-1],
-                'profit_loss': lot_size * (current_price - active_trade['buy_price'])
+                'lot_size': lot_size,
+                'profit_loss': profit_loss
             })
-            balance += lot_size * (current_price - active_trade['buy_price'])
+            balance += profit_loss
         elif trade_type == 'Sell Short':
             current_price = data['close'].iloc[-1]
+            profit_loss = lot_size * (active_trade['sell_short_price'] - current_price)
             trades.append({
                 'symbol': symbol,
                 'type': 'Sell Short',
@@ -122,12 +154,13 @@ def simulate_trades(data, symbol, tolerance, initial_balance=10000, lot_size=1):
                 'buy_cover_price': current_price,
                 'sell_short_time': active_trade['sell_short_time'],
                 'buy_cover_time': data['timestamp'].iloc[-1],
-                'profit_loss': lot_size * (active_trade['sell_short_price'] - current_price)
+                'lot_size': lot_size,
+                'profit_loss': profit_loss
             })
-            balance += lot_size * (active_trade['sell_short_price'] - current_price)
+            balance += profit_loss
 
     remaining_balance = balance
-    return initial_invested_balance, remaining_balance, trades
+    return initial_balance, remaining_balance, trades
 
 # Function to compute winning rate
 def compute_winning_rate(trades):
@@ -142,7 +175,8 @@ popular_coins = [
     'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'ADA/USDT', 'XRP/USDT',
     'DOGE/USDT', 'DOT/USDT', 'UNI/USDT', 'BCH/USDT', 'LTC/USDT'
 ]
-### Wide page config
+
+# Wide page config
 st.set_page_config(layout="wide")
 
 # Main Streamlit app
@@ -164,43 +198,70 @@ symbol = st.selectbox("Select a cryptocurrency:", popular_coins)
 timeframe = st.selectbox("Select timeframe:", ['1m', '5m', '15m', '30m', '1h', '4h', '1d'], index=0)
 tolerance = st.slider("Select tolerance level (%)", min_value=0.1, max_value=5.0, value=2.0, step=0.1)
 
+# Add sliders for initial investment and funds usage percentage
+initial_investment = st.slider("Initial Investment (USDT)", min_value=100, max_value=100000, value=10000, step=100)
+funds_usage_percentage = st.slider("Funds Usage Percentage (%)", min_value=10, max_value=100, value=100, step=10)
+
+# Fetch data and apply trading strategy
 data = fetch_data(symbol, timeframe)
 data = calculate_ema(data, periods=[20, 50, 100])
 data, buy_signals, sell_signals = apply_trading_strategy(data, tolerance)
-initial_invested_balance, final_balance, trades = simulate_trades(data, symbol, tolerance)
+
+# Simulate trades with dynamic lot size based on funds usage percentage
+initial_invested_balance, final_balance, trades = simulate_trades(data, symbol, tolerance, initial_balance=initial_investment, funds_usage_percentage=funds_usage_percentage)
 
 win_rate = compute_winning_rate(trades)
 
-st.write(f"Initial Invested Balance: {initial_invested_balance:.2f} USDT")
-st.write(f"Final Balance: {final_balance:.2f} USDT")
-st.write(f"Winning rate: {win_rate:.2%}")
+# Display results
+st.subheader("Trading Signals and Performance Metrics")
+st.markdown(f"**Timeframe:** {timeframe}")
+st.markdown(f"**Initial Investment:** {initial_investment} USDT")
+st.markdown(f"**Funds Usage Percentage:** {funds_usage_percentage}%")
+st.markdown(f"**Final Balance:** {final_balance:.2f} USDT")
+st.markdown(f"**Winning Rate:** {win_rate * 100:.2f}%")
 
-fig = go.Figure()
 
-# Candlestick chart
-fig.add_trace(go.Candlestick(x=data['timestamp'],
+# Plot candlestick chart with EMAs
+st.subheader("Candlestick Chart with EMAs and Trade Signals")
+fig = go.Figure(data=[go.Candlestick(x=data['timestamp'],
                 open=data['open'],
                 high=data['high'],
                 low=data['low'],
-                close=data['close'], name='market data'))
+                close=data['close'])])
 
-# Add EMAs
-fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_20'], line=dict(color='blue', width=1), name='EMA 20'))
-fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_50'], line=dict(color='red', width=1), name='EMA 50'))
-fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_100'], line=dict(color='green', width=1), name='EMA 100'))
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_20'], mode='lines', name='EMA 20', line=dict(color='blue', width=1)))
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_50'], mode='lines', name='EMA 50', line=dict(color='red', width=1)))
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_100'], mode='lines', name='EMA 100', line=dict(color='green', width=1)))
 
-# Buy signals
-fig.add_trace(go.Scatter(x=buy_signals['timestamp'], y=buy_signals['close'], mode='markers', marker=dict(color='green', symbol='triangle-up', size=10), name='Buy Signal'))
+# Add annotations for buy and sell signals
+for index, row in buy_signals.iterrows():
+    fig.add_annotation(
+        x=row['timestamp'],
+        y=row['close'],
+        text="Buy",
+        showarrow=True,
+        arrowhead=1,
+        ax=0,
+        ay=-40
+    )
 
-# Sell short signals
-fig.add_trace(go.Scatter(x=sell_signals['timestamp'], y=sell_signals['close'], mode='markers', marker=dict(color='red', symbol='triangle-down', size=10), name='Sell Short Signal'))
+for index, row in sell_signals.iterrows():
+    fig.add_annotation(
+        x=row['timestamp'],
+        y=row['close'],
+        text="Sell Short",
+        showarrow=True,
+        arrowhead=1,
+        ax=0,
+        ay=40
+    )
 
-fig.update_layout(title=f'{symbol} Price Data with EMA Trading Strategy ({timeframe})', 
-                xaxis_title='Time', 
-                yaxis_title='Price',
+fig.update_layout(title=f'{symbol} Candlestick Chart with EMAs and Trade Signals', 
+                xaxis_title='Date', 
+                yaxis_title='Price (USDT)', 
                 xaxis=dict(
-                    rangeslider=dict(visible=True),
-                    type='date'
+                rangeslider=dict(visible=True),
+                type='date'
                 ),
                 yaxis=dict(
                     title='Price',
@@ -211,60 +272,51 @@ fig.update_layout(title=f'{symbol} Price Data with EMA Trading Strategy ({timefr
                 ),
                 template='plotly_dark',
                 height=800,
+                width=1500,
                 dragmode='zoom',  # Enables zooming
                 hovermode='x unified'  # Unified hover mode for better interactivity
-                )
-
-# Enable date range buttons and rangeslider
-fig.update_xaxes(
-    rangeselector=dict(
-        buttons=list([
-            dict(count=1, label="1d", step="day", stepmode="backward"),
-            dict(count=7, label="1w", step="day", stepmode="backward"),
-            dict(count=1, label="1m", step="month", stepmode="backward"),
-            dict(count=6, label="6m", step="month", stepmode="backward"),
-            dict(count=1, label="YTD", step="year", stepmode="todate"),
-            dict(count=1, label="1y", step="year", stepmode="backward"),
-            dict(step="all")
-        ])
-    ),
-    rangeslider=dict(visible=True),
-    type='date'
 )
+fig.update_xaxes(rangeselector=dict(
+                    buttons=list([
+                        dict(count=1, label="1d", step="day", stepmode="backward"),
+                        dict(count=7, label="1w", step="day", stepmode="backward"),
+                        dict(count=1, label="1m", step="month", stepmode="backward"),
+                        dict(count=6, label="6m", step="month", stepmode="backward"),
+                        dict(count=1, label="YTD", step="year", stepmode="todate"),
+                        dict(count=1, label="1y", step="year", stepmode="backward"),
+                        dict(step="all")
+                    ])
+                ),
+                rangeslider=dict(visible=True),
+                type='date')
 
-# # Enable y-axis zooming
+# Enable y-axis zooming
 fig.update_yaxes(
     range=[data['close'].min() * 0.95, data['close'].max() * 1.05],  # Adjust the initial visible range as desired
     fixedrange=False  # Allow zooming
 )
-st.plotly_chart(fig, use_container_width=True)
-# Display all trades in a table
+st.plotly_chart(fig)
+
+# Display trade history
+# List of all possible columns
+all_columns = [
+    'symbol', 'type', 'buy_price', 'sell_price', 'sell_short_price', 'buy_cover_price',
+    'buy_time', 'sell_time', 'sell_short_time', 'buy_cover_time', 'lot_size', 'profit_loss'
+]
+
+# Display trade history
 if trades:
+    st.subheader("Trade History")
     trades_df = pd.DataFrame(trades)
-    trades_df.index += 1
-    trades_df.index.name = "S.N"
-    trades_df['Profit/Loss'] = trades_df['profit_loss'].map(lambda x: f"{x:.2f} USDT")
-
-    buy_trades = trades_df[trades_df['type'] == 'Buy']
-    sell_short_trades = trades_df[trades_df['type'] == 'Sell Short']
-
-    if not buy_trades.empty:
-        buy_trades['Entry Time'] = buy_trades['buy_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        buy_trades['Exit Time'] = buy_trades['sell_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        buy_trades = buy_trades[['symbol', 'type', 'buy_price', 'sell_price', 'Entry Time', 'Exit Time', 'Profit/Loss']]
-        buy_trades.columns = ['Symbol', 'Type', 'Entry Price', 'Exit Price', 'Entry Time', 'Exit Time', 'Profit/Loss']
-
-    if not sell_short_trades.empty:
-        sell_short_trades['Entry Time'] = sell_short_trades['sell_short_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        sell_short_trades['Exit Time'] = sell_short_trades['buy_cover_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        sell_short_trades = sell_short_trades[['symbol', 'type', 'sell_short_price', 'buy_cover_price', 'Entry Time', 'Exit Time', 'Profit/Loss']]
-        sell_short_trades.columns = ['Symbol', 'Type', 'Entry Price', 'Exit Price', 'Entry Time', 'Exit Time', 'Profit/Loss']
-
-    if not buy_trades.empty or not sell_short_trades.empty:
-        st.write("All Trade History")
-        if not buy_trades.empty:
-            st.dataframe(buy_trades)
-        if not sell_short_trades.empty:
-            st.dataframe(sell_short_trades)
+    
+    # Filter columns to only those present in the DataFrame
+    existing_columns = [col for col in all_columns if col in trades_df.columns]
+    st.table(trades_df[existing_columns])
 else:
-    st.write("No trades executed.")
+    st.subheader("No trades executed.")
+    
+    # Create an empty DataFrame with the required columns
+    empty_df = pd.DataFrame(columns=all_columns)
+    st.table(empty_df)
+
+
