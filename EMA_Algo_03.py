@@ -29,7 +29,7 @@ def calculate_rsi(series, period=14):
     return rsi
 
 # Improved trading strategy function
-def apply_trading_strategy(data, tolerance):
+def apply_trading_strategy_01(data, tolerance):
     data['Signal'] = ''
     data['EMAs_Converge'] = (
         (abs(data['EMA_20'] / data['EMA_50'] - 1) <= tolerance / 100) &
@@ -64,6 +64,8 @@ def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_pe
             if active_trade['type'] == 'Buy':
                 if row['close'] >= active_trade['buy_price'] * (1 + take_profit):
                     # Take profit for buy trade
+                    profit_loss = active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    percentage_profit_loss = ((row['close'] - active_trade['buy_price']) / active_trade['buy_price']) * 100
                     trades.append({
                         'symbol': symbol,
                         'type': 'Buy',
@@ -72,13 +74,16 @@ def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_pe
                         'buy_time': active_trade['buy_time'],
                         'sell_time': row['timestamp'],
                         'lot_size': active_trade['lot_size'],
-                        'profit_loss': active_trade['lot_size'] * (row['close'] - active_trade['buy_price']),
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': percentage_profit_loss,
                         'signal': 'Sold bought stock Profit'
                     })
-                    balance += active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    balance += profit_loss
                     active_trade = None
                 elif row['close'] <= active_trade['buy_price'] * (1 - stop_loss):
                     # Stop loss for buy trade
+                    profit_loss = active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    percentage_profit_loss = ((row['close'] - active_trade['buy_price']) / active_trade['buy_price']) * 100
                     trades.append({
                         'symbol': symbol,
                         'type': 'Buy',
@@ -87,15 +92,18 @@ def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_pe
                         'buy_time': active_trade['buy_time'],
                         'sell_time': row['timestamp'],
                         'lot_size': active_trade['lot_size'],
-                        'profit_loss': active_trade['lot_size'] * (row['close'] - active_trade['buy_price']),
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': percentage_profit_loss,
                         'signal': 'Sold bought stock Loss'
                     })
-                    balance += active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    balance += profit_loss
                     active_trade = None
 
             elif active_trade['type'] == 'Sell Short':
                 if row['close'] <= active_trade['sell_short_price'] * (1 - take_profit):
                     # Take profit for sell short trade
+                    profit_loss = active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    percentage_profit_loss = ((active_trade['sell_short_price'] - row['close']) / active_trade['sell_short_price']) * 100
                     trades.append({
                         'symbol': symbol,
                         'type': 'Sell Short',
@@ -104,13 +112,16 @@ def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_pe
                         'sell_short_time': active_trade['sell_short_time'],
                         'buy_cover_time': row['timestamp'],
                         'lot_size': active_trade['lot_size'],
-                        'profit_loss': active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close']),
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': percentage_profit_loss,
                         'signal': 'Sold short stock Profit'
                     })
-                    balance += active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    balance += profit_loss
                     active_trade = None
                 elif row['close'] >= active_trade['sell_short_price'] * (1 + stop_loss):
                     # Stop loss for sell short trade
+                    profit_loss = active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    percentage_profit_loss = ((active_trade['sell_short_price'] - row['close']) / active_trade['sell_short_price']) * 100
                     trades.append({
                         'symbol': symbol,
                         'type': 'Sell Short',
@@ -119,10 +130,11 @@ def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_pe
                         'sell_short_time': active_trade['sell_short_time'],
                         'buy_cover_time': row['timestamp'],
                         'lot_size': active_trade['lot_size'],
-                        'profit_loss': active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close']),
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': percentage_profit_loss,
                         'signal': 'Sold short stock Loss'
                     })
-                    balance += active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    balance += profit_loss
                     active_trade = None
 
         if not active_trade and not signals.empty:
@@ -173,26 +185,39 @@ def compute_winning_rate(trades):
 st.set_page_config(layout="wide")
 
 # Streamlit app
-st.title("Enhanced Crypto Trading Bot")
+st.title("Auto Crypto/Stocks Trading Bot")
 
 # User inputs
-symbol = st.sidebar.text_input("Symbol", value="BTC/USDT")
-timeframe = st.sidebar.selectbox("Timeframe", ["5m", "15m", "30m", "1h", "4h", "1d"], index=3)
-tolerance = st.sidebar.slider("EMA Convergence Tolerance (%)", min_value=0.01, max_value=0.3, value=0.02, step=0.01)
+symbol = st.sidebar.selectbox("Symbol", ["BTC/USDT","ETH/USDT","ROSE/USDT","PEOPLE/USDT","SOL/USDT","HIGH/USDT","DOGE/USDT"])
+timeframe = st.sidebar.selectbox("Timeframe", ["1m","5m", "15m", "30m", "1h", "4h", "1d"], index=3)
 initial_investment = st.sidebar.number_input("Initial Investment (USDT)", min_value=100.0, value=10000.0)
-funds_usage_percentage = st.sidebar.slider("Funds Usage Percentage", min_value=10, max_value=100, value=100, step=5)
+tolerance = st.sidebar.slider("EMA Convergence Tolerance (%)", min_value=0.01, max_value=0.3, value=0.02, step=0.01)
+funds_usage_percentage = st.sidebar.slider("Funds Usage Percentage", min_value=10, max_value=100, value=100, step=10)
 
 # Fetch and process data
 data = fetch_data(symbol, timeframe)
 data = calculate_indicators(data)
 
 # Apply trading strategy
-signals = apply_trading_strategy(data, tolerance)
+option = st.sidebar.selectbox(
+    'Choose an algorithm:',
+    ('Algorithm 1', 'Algorithm 2', 'Algorithm 3', 'Algorithm 4')
+)
+
+if option == 'Algorithm 1':
+    signals = apply_trading_strategy_01(data, tolerance)
+elif option == 'Algorithm 2':
+    st.write("Under Development 2nd Algo")
+    # signals = apply_trading_strategy_02(data, tolerance)
+elif option == 'Algorithm 3':
+    st.write("Under Development under 3rd Algo")
+    # signals = apply_trading_strategy_03(data)
+# else:
+#     signals = apply_trading_strategy_04(data)
+
 
 # Simulate trades
-initial_invested_balance, final_balance, trades = simulate_trades(data, signals, symbol, initial_balance=initial_investment, funds_usage_percentage=funds_usage_percentage)
-
-# Compute winning rate
+initial_balance, final_balance, trades = simulate_trades(data, signals, symbol, initial_investment, funds_usage_percentage)
 win_rate = compute_winning_rate(trades)
 
 # Display results
@@ -284,7 +309,7 @@ st.plotly_chart(fig)
 # List of all possible columns
 all_columns = [
     'symbol', 'type', 'buy_price', 'sell_price', 'sell_short_price', 'buy_cover_price',
-    'buy_time', 'sell_time', 'sell_short_time', 'buy_cover_time', 'lot_size', 'profit_loss', 'signal'
+    'buy_time', 'sell_time', 'sell_short_time', 'buy_cover_time', 'lot_size', 'profit_loss', '%Profit_Loss', 'signal'
 ]
 
 # Display trade history
