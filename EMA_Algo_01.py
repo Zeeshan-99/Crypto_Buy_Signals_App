@@ -1,27 +1,61 @@
 import streamlit as st
 import pandas as pd
+import ccxt
 import plotly.graph_objects as go
-import seaborn as sns
-import matplotlib.pyplot as plt
 
+# Function to fetch data from Binance
 @st.cache_data
-def load_data(uploaded_file):
-    data = pd.read_csv(uploaded_file)
-    data['Date'] = pd.to_datetime(data['Date'])
-    data.sort_values('Date', inplace=True)
+def fetch_data(symbol, timeframe, limit=1000):
+    exchange = ccxt.binance()
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    data = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
     return data
 
-def calculate_emas(data):
-    data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
-    data['EMA_50'] = data['Close'].ewm(span=50, adjust=False).mean()
-    data['EMA_100'] = data['Close'].ewm(span=100, adjust=False).mean()
+# Function to calculate technical indicators
+def calculate_indicators(data):
+    data['EMA_20'] = data['close'].ewm(span=20, adjust=False).mean()
+    data['EMA_50'] = data['close'].ewm(span=50, adjust=False).mean()
+    data['EMA_100'] = data['close'].ewm(span=100, adjust=False).mean()
+    data['RSI'] = calculate_rsi(data['close'])
     return data
 
-def generate_signals_algo_01(data, tolerance):
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# Improved trading strategy function
+def apply_trading_strategy_01(data, tolerance):
+    data['Signal'] = ''
+    data['EMAs_Converge'] = (
+        (abs(data['EMA_20'] / data['EMA_50'] - 1) <= tolerance / 100) &
+        (abs(data['EMA_20'] / data['EMA_100'] - 1) <= tolerance / 100) &
+        (abs(data['EMA_50'] / data['EMA_100'] - 1) <= tolerance / 100)
+    )
+    
+    for i in range(2, len(data) - 1):  # Check from the third row to the second last row
+        if data['EMAs_Converge'].iloc[i]:
+            # Additional criteria using RSI
+            if data['RSI'].iloc[i] < 30:
+                # Buy signal criteria
+                data.at[i + 1, 'Signal'] = 'Buy'
+            elif data['RSI'].iloc[i] > 70:
+                # Sell signal criteria
+                data.at[i + 1, 'Signal'] = 'Sell'
+
+    signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
+    return signals
+
+
+def apply_trading_strategy_02(data, tolerance):
     data['Signal'] = ''
     data['EMAs_Converge'] = ((abs(data['EMA_20'] / data['EMA_50'] - 1) <= tolerance) &
-                             (abs(data['EMA_20'] / data['EMA_100'] - 1) <= tolerance) &
-                             (abs(data['EMA_50'] / data['EMA_100'] - 1) <= tolerance))
+                            (abs(data['EMA_20'] / data['EMA_100'] - 1) <= tolerance) &
+                            (abs(data['EMA_50'] / data['EMA_100'] - 1) <= tolerance))
     
     in_signal = False
     last_signal = None
@@ -30,15 +64,15 @@ def generate_signals_algo_01(data, tolerance):
         if data['EMAs_Converge'].iloc[i]:
             # Buy signal criteria
             if (data['EMA_20'].iloc[i-1] > data['EMA_20'].iloc[i-2]) and \
-               (data['EMA_50'].iloc[i-1] > data['EMA_50'].iloc[i-2]) and \
-               (data['EMA_100'].iloc[i-1] > data['EMA_100'].iloc[i-2]):
+                (data['EMA_50'].iloc[i-1] > data['EMA_50'].iloc[i-2]) and \
+                (data['EMA_100'].iloc[i-1] > data['EMA_100'].iloc[i-2]):
                 data.at[i + 1, 'Signal'] = 'Buy'
                 in_signal = True
                 last_signal = 'Buy'
             # Sell signal criteria
             elif (data['EMA_20'].iloc[i-1] < data['EMA_20'].iloc[i-2]) and \
-                 (data['EMA_50'].iloc[i-1] < data['EMA_50'].iloc[i-2]) and \
-                 (data['EMA_100'].iloc[i-1] < data['EMA_100'].iloc[i-2]):
+                (data['EMA_50'].iloc[i-1] < data['EMA_50'].iloc[i-2]) and \
+                (data['EMA_100'].iloc[i-1] < data['EMA_100'].iloc[i-2]):
                 data.at[i + 1, 'Signal'] = 'Sell'
                 in_signal = True
                 last_signal = 'Sell'
@@ -51,30 +85,32 @@ def generate_signals_algo_01(data, tolerance):
     signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
     return signals
 
-def generate_signals_algo_02(data, tolerance):
+
+def apply_trading_strategy_03(data, ema_periods=[20, 50, 100], tolerance=0.01, lookback=3):
+    ema_cols = [f'EMA_{period}' for period in ema_periods]
+    
+    for col in ema_cols:
+        if col not in data.columns:
+            raise ValueError(f"Data does not contain required EMA column: {col}")
+    
     data['Signal'] = ''
-    data['EMAs_Converge'] = ((abs(data['EMA_20'] / data['EMA_50'] - 1) <= tolerance) &
-                             (abs(data['EMA_20'] / data['EMA_100'] - 1) <= tolerance) &
-                             (abs(data['EMA_50'] / data['EMA_100'] - 1) <= tolerance))
+    data['EMAs_Converge'] = all(
+        abs(data[ema_cols[i]] / data[ema_cols[j]] - 1) <= tolerance 
+        for i in range(len(ema_cols)) for j in range(i+1, len(ema_cols))
+    )
     
     in_signal = False
     last_signal = None
 
-    for i in range(3, len(data)-2):  # Check at least 3 candles for trends
+    for i in range(lookback, len(data) - lookback):
         if data['EMAs_Converge'].iloc[i]:
-            # Buy signal criteria
-            if (data['Close'].iloc[i-2] < data['Close'].iloc[i-1] < data['Close'].iloc[i]) and \
-               (data['EMA_20'].iloc[i-1] > data['EMA_20'].iloc[i-2]) and \
-               (data['EMA_50'].iloc[i-1] > data['EMA_50'].iloc[i-2]) and \
-               (data['EMA_100'].iloc[i-1] > data['EMA_100'].iloc[i-2]):
+            if all(data['Close'].iloc[i-j] < data['Close'].iloc[i-j+1] for j in range(lookback, 0, -1)) and \
+               all(data[ema_cols[k]].iloc[i-1] > data[ema_cols[k]].iloc[i-2] for k in range(len(ema_cols))):
                 data.at[i + 1, 'Signal'] = 'Buy'
                 in_signal = True
                 last_signal = 'Buy'
-            # Sell signal criteria
-            elif (data['Close'].iloc[i-2] > data['Close'].iloc[i-1] > data['Close'].iloc[i]) and \
-                 (data['EMA_20'].iloc[i-1] < data['EMA_20'].iloc[i-2]) and \
-                 (data['EMA_50'].iloc[i-1] < data['EMA_50'].iloc[i-2]) and \
-                 (data['EMA_100'].iloc[i-1] < data['EMA_100'].iloc[i-2]):
+            elif all(data['Close'].iloc[i-j] > data['Close'].iloc[i-j+1] for j in range(lookback, 0, -1)) and \
+                 all(data[ema_cols[k]].iloc[i-1] < data[ema_cols[k]].iloc[i-2] for k in range(len(ema_cols))):
                 data.at[i + 1, 'Signal'] = 'Sell'
                 in_signal = True
                 last_signal = 'Sell'
@@ -87,206 +123,278 @@ def generate_signals_algo_02(data, tolerance):
     signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
     return signals
 
-def generate_signals_algo_03(data):
-    data['Signal'] = ''
-    data['MACD'] = data['Close'].ewm(span=12, adjust=False).mean() - data['Close'].ewm(span=26, adjust=False).mean()
-    data['MACD_Signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
-    data['MACD_Diff'] = data['MACD'] - data['MACD_Signal']
-    
-    in_position = False
 
-    for i in range(1, len(data)-1):
-        if data['MACD_Diff'].iloc[i-1] < 0 and data['MACD_Diff'].iloc[i] > 0:
-            data.at[i, 'Signal'] = 'Buy'
-            in_position = True
-        elif data['MACD_Diff'].iloc[i-1] > 0 and data['MACD_Diff'].iloc[i] < 0:
-            data.at[i, 'Signal'] = 'Sell'
-            in_position = False
-        elif in_position:
-            data.at[i, 'Signal'] = 'Hold'
+# Simulate trades with SL and TP
+def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_percentage=100):
+    balance = initial_balance
+    trades = []
+    active_trade = None
+    trade_type = None
+    stop_loss = 0.02
+    take_profit = 0.04
 
-    signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
-    return signals
+    for i, row in data.iterrows():
+        if active_trade is not None:
+            if active_trade['type'] == 'Buy':
+                if row['close'] >= active_trade['buy_price'] * (1 + take_profit):
+                    # Take profit for buy trade
+                    profit_loss = active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    percentage_profit_loss = ((row['close'] - active_trade['buy_price']) / active_trade['buy_price']) * 100
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Buy',
+                        'buy_price': active_trade['buy_price'],
+                        'sell_price': row['close'],
+                        'buy_time': active_trade['buy_time'],
+                        'sell_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': str(round(percentage_profit_loss,2))+"%",
+                        'signal': 'Sold bought stock Profit'
+                    })
+                    balance += profit_loss
+                    active_trade = None
+                elif row['close'] <= active_trade['buy_price'] * (1 - stop_loss):
+                    # Stop loss for buy trade
+                    profit_loss = active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    percentage_profit_loss = ((row['close'] - active_trade['buy_price']) / active_trade['buy_price']) * 100
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Buy',
+                        'buy_price': active_trade['buy_price'],
+                        'sell_price': row['close'],
+                        'buy_time': active_trade['buy_time'],
+                        'sell_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': str(round(percentage_profit_loss,2))+"%",
+                        'signal': 'Sold bought stock Loss'
+                    })
+                    balance += profit_loss
+                    active_trade = None
 
-def generate_signals_algo_04(data):
-    data['Signal'] = ''
-    data['RSI'] = calculate_rsi(data['Close'], 14)
-    
-    in_position = False
+            elif active_trade['type'] == 'Sell Short':
+                if row['close'] <= active_trade['sell_short_price'] * (1 - take_profit):
+                    # Take profit for sell short trade
+                    profit_loss = active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    percentage_profit_loss = ((active_trade['sell_short_price'] - row['close']) / active_trade['sell_short_price']) * 100
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Sell Short',
+                        'sell_short_price': active_trade['sell_short_price'],
+                        'buy_cover_price': row['close'],
+                        'sell_short_time': active_trade['sell_short_time'],
+                        'buy_cover_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': str(round(percentage_profit_loss,2))+"%",
+                        'signal': 'Sold short stock Profit'
+                    })
+                    balance += profit_loss
+                    active_trade = None
+                elif row['close'] >= active_trade['sell_short_price'] * (1 + stop_loss):
+                    # Stop loss for sell short trade
+                    profit_loss = active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    percentage_profit_loss = ((active_trade['sell_short_price'] - row['close']) / active_trade['sell_short_price']) * 100
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Sell Short',
+                        'sell_short_price': active_trade['sell_short_price'],
+                        'buy_cover_price': row['close'],
+                        'sell_short_time': active_trade['sell_short_time'],
+                        'buy_cover_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': profit_loss,
+                        '%Profit_Loss': str(round(percentage_profit_loss,2))+"%",
+                        'signal': 'Sold short stock Loss'
+                    })
+                    balance += profit_loss
+                    active_trade = None
 
-    for i in range(1, len(data)-1):
-        if data['RSI'].iloc[i-1] < 30 and data['RSI'].iloc[i] > 30:
-            data.at[i, 'Signal'] = 'Buy'
-            in_position = True
-        elif data['RSI'].iloc[i-1] > 70 and data['RSI'].iloc[i] < 70:
-            data.at[i, 'Signal'] = 'Sell'
-            in_position = False
-        elif in_position:
-            data.at[i, 'Signal'] = 'Hold'
+        if not active_trade and not signals.empty:
+            signal = signals[signals['timestamp'] == row['timestamp']]
+            if not signal.empty:
+                signal = signal.iloc[0]
+                close_price = row['close']
+                available_funds = balance * (funds_usage_percentage / 100)
+                max_possible_lot_size = available_funds / close_price
+                
+                if max_possible_lot_size < 1:
+                    lot_size = max_possible_lot_size
+                else:
+                    lot_size = int(max_possible_lot_size)
 
-    signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
-    return signals
+                if signal['Signal'] == 'Buy':
+                    active_trade = {
+                        'symbol': symbol,
+                        'type': 'Buy',
+                        'buy_price': close_price,
+                        'buy_time': row['timestamp'],
+                        'lot_size': lot_size
+                    }
+                    trade_type = 'Buy'
 
-def calculate_rsi(series, window):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+                elif signal['Signal'] == 'Sell':
+                    active_trade = {
+                        'symbol': symbol,
+                        'type': 'Sell Short',
+                        'sell_short_price': close_price,
+                        'sell_short_time': row['timestamp'],
+                        'lot_size': lot_size
+                    }
+                    trade_type = 'Sell Short'
 
-def calculate_close_price_diff(df):
-    start_idx = None
-    current_signal = None
-    
-    for idx, row in df.iterrows():
-        signal = row['Signal']
-        
-        if signal != current_signal:
-            if start_idx is not None:
-                end_idx = idx - 1
-                df.loc[end_idx, 'Close_Price_Diff'] = df.loc[start_idx, 'Close'] - df.loc[end_idx, 'Close']
-            start_idx = idx
-            current_signal = signal
-    
-    if start_idx is not None and current_signal is not None:
-        end_idx = df.index[-1]
-        df.loc[end_idx, 'Close_Price_Diff'] = df.loc[start_idx, 'Close'] - df.loc[end_idx, 'Close']
+    final_balance = balance
+    return initial_balance, final_balance, trades
 
-# Assume all your previous functions and imports are here
+# Function to compute winning rate
+def compute_winning_rate(trades):
+    if not trades:
+        return 0
+    winning_trades = [trade for trade in trades if trade['profit_loss'] > 0]
+    win_rate = len(winning_trades) / len(trades)
+    return win_rate
 
-def plot_data(data, signals, tolerance, option):
-    fig = go.Figure()
-
-    fig.add_trace(go.Candlestick(x=data['Date'],
-                                 open=data['Open'],
-                                 high=data['High'],
-                                 low=data['Low'],
-                                 close=data['Close'],
-                                 name='Candlestick'))
-
-    fig.add_trace(go.Scatter(x=data['Date'], y=data['EMA_20'], mode='lines', name='EMA 20'))
-    fig.add_trace(go.Scatter(x=data['Date'], y=data['EMA_50'], mode='lines', name='EMA 50'))
-    fig.add_trace(go.Scatter(x=data['Date'], y=data['EMA_100'], mode='lines', name='EMA 100'))
-
-    if option == 'Algorithm 4':  # RSI Algorithm
-        fig.add_trace(go.Scatter(x=data['Date'], y=data['RSI'], mode='lines', name='RSI'))
-        fig.add_trace(go.Scatter(x=data['Date'], y=[30] * len(data), mode='lines', name='RSI Oversold', line=dict(dash='dot')))
-        fig.add_trace(go.Scatter(x=data['Date'], y=[70] * len(data), mode='lines', name='RSI Overbought', line=dict(dash='dot')))
-
-    fig.add_trace(go.Scatter(x=signals[signals['Signal'] == 'Buy']['Date'], y=signals[signals['Signal'] == 'Buy']['Low'],
-                             mode='markers', marker=dict(symbol='triangle-up', size=10, color='green'),
-                             name='Buy Signal'))
-    fig.add_trace(go.Scatter(x=signals[signals['Signal'] == 'Sell']['Date'], y=signals[signals['Signal'] == 'Sell']['High'],
-                             mode='markers', marker=dict(symbol='triangle-down', size=10, color='red'),
-                             name='Sell Signal'))
-
-    fig.update_layout(
-        title=f'Crypto/Stock Prices with Persistent Buy/Sell Signals ({option})',
-        xaxis_title='Date',
-        yaxis_title='Price',
-        xaxis=dict(
-            rangeslider=dict(visible=True),
-            type='date'
-        ),
-        yaxis=dict(
-            title='Price',
-            side='left',
-            showgrid=True,
-            zeroline=False,
-            tickformat="$.2f"
-        ),
-        template='plotly_dark',
-        height=800,
-        dragmode='zoom',  # Enables zooming
-        hovermode='x unified'  # Unified hover mode for better interactivity
-    )
-
-    fig.update_xaxes(rangeselector=dict(
-                        buttons=list([
-                            dict(count=1, label="1d", step="day", stepmode="backward"),
-                            dict(count=7, label="1w", step="day", stepmode="backward"),
-                            dict(count=1, label="1m", step="month", stepmode="backward"),
-                            dict(count=6, label="6m", step="month", stepmode="backward"),
-                            dict(count=1, label="YTD", step="year", stepmode="todate"),
-                            dict(count=1, label="1y", step="year", stepmode="backward"),
-                            dict(step="all")
-                        ])
-                    ),
-                    rangeslider=dict(visible=True),
-                    type='date')
-    
-    # Enable y-axis zooming
-    fig.update_yaxes(
-        range=[data['Close'].min() * 0.95, data['Close'].max() * 1.05],  # Adjust the initial visible range as desired
-        fixedrange=False  # Allow zooming
-    )
-    return fig
-
-def plot_seaborn(signals):
-    fig, ax = plt.subplots(1, 2, figsize=(15, 7))
-    
-    sns.lineplot(x=range(len(signals[signals['Signal']=='Sell'])), 
-                 y="Close_Price_Diff",  
-                 data=signals[signals['Signal']=='Sell'],
-                 ax=ax[0])
-    
-    ax[0].set_title('Sell')
-    ax[0].grid()
-    ax[0].axhline(0, color='red', linewidth=2)
-    
-    sns.lineplot(x=range(len(signals[signals['Signal']=='Buy'])),  
-                 y="Close_Price_Diff",  
-                 data=signals[signals['Signal']=='Buy'],
-                 ax=ax[1])
-    ax[1].set_title('Buy')
-    ax[1].grid()
-    ax[1].axhline(0, color='red', linewidth=2)
-    
-    return fig
-
+### for full screen
 st.set_page_config(layout="wide")
-st.title('Crypto/Stock Analysis with Buy/Sell Signals')
 
-uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+# Streamlit app
+st.title("Auto Crypto/Stocks Trading Bot")
 
-if uploaded_file is not None:
-    data = load_data(uploaded_file)
-    data = calculate_emas(data)
+# User inputs
+symbol = st.sidebar.selectbox("Symbol", ["BTC/USDT","ETH/USDT","ROSE/USDT","PEOPLE/USDT","SOL/USDT","HIGH/USDT","DOGE/USDT"])
+timeframe = st.sidebar.selectbox("Timeframe", ["1m","5m", "15m", "30m", "1h", "4h", "1d"], index=3)
+initial_investment = st.sidebar.number_input("Initial Investment (USDT)", min_value=100.0, value=10000.0)
+tolerance = st.sidebar.slider("EMA Convergence Tolerance (%)", min_value=0.0, max_value=0.3, value=0.02, step=0.01)
+funds_usage_percentage = st.sidebar.slider("Funds Usage Percentage", min_value=10, max_value=100, value=100, step=10)
+
+# Fetch and process data
+data = fetch_data(symbol, timeframe)
+data = calculate_indicators(data)
+
+# Apply trading strategy
+option = st.sidebar.selectbox(
+    'Choose an algorithm:',
+    ('Algorithm 1', 'Algorithm 2', 'Algorithm 3', 'Algorithm 4')
+)
+
+if option == 'Algorithm 1':
+    signals = apply_trading_strategy_01(data, tolerance)
+elif option == 'Algorithm 2':
+    signals = apply_trading_strategy_02(data, tolerance)
+elif option == 'Algorithm 3':
+    signals = apply_trading_strategy_03(data, tolerance)
+# else:
+#     signals = apply_trading_strategy_04(data)
+
+
+# Simulate trades
+initial_balance, final_balance, trades = simulate_trades(data, signals, symbol, initial_investment, funds_usage_percentage)
+win_rate = compute_winning_rate(trades)
+
+# Display results
+st.sidebar.subheader("Trading Signals and Performance Metrics")
+st.sidebar.markdown(f"**Timeframe:** {timeframe}")
+st.sidebar.markdown(f"**Initial Investment:** {initial_investment} USDT")
+st.sidebar.markdown(f"**Funds Usage Percentage:** {funds_usage_percentage}%")
+st.sidebar.markdown(f"**Final Balance:** {final_balance:.2f} USDT")
+st.sidebar.markdown(f"**Winning Rate:** {win_rate * 100:.2f}%")
+
+# Plot candlestick chart with EMAs
+st.subheader("Candlestick Chart with EMAs and Trade Signals")
+fig = go.Figure(data=[go.Candlestick(x=data['timestamp'],
+                open=data['open'],
+                high=data['high'],
+                low=data['low'],
+                close=data['close'])])
+
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_20'], mode='lines', name='EMA 20', line=dict(color='blue', width=2)))
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_50'], mode='lines', name='EMA 50', line=dict(color='red', width=2)))
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['EMA_100'], mode='lines', name='EMA 100', line=dict(color='green', width=2)))
+fig.add_trace(go.Scatter(x=data['timestamp'], y=data['RSI'], mode='lines', name='RSI', line=dict(color='orange', width=2)))
+
+# Add annotations for buy and sell signals
+for index, row in signals.iterrows():
+    if row['Signal'] == 'Buy':
+        fig.add_annotation(
+            x=row['timestamp'],
+            y=row['close'],
+            text="Buy",
+            showarrow=True,
+            arrowhead=1,
+            ax=0,
+            ay=-40
+        )
+    elif row['Signal'] == 'Sell':
+        fig.add_annotation(
+            x=row['timestamp'],
+            y=row['close'],
+            text="Sell",
+            showarrow=True,
+            arrowhead=1,
+            ax=0,
+            ay=40
+        )
+
+fig.update_layout(title=f'{symbol} Candlestick Chart with EMAs and Trade Signals', 
+                xaxis_title='Date', 
+                yaxis_title='Price (USDT)', 
+                xaxis=dict(
+                rangeslider=dict(visible=True),
+                type='date'
+                ),
+                yaxis=dict(
+                    title='Price',
+                    side='left',
+                    showgrid=True,
+                    zeroline=False,
+                    tickformat="$.2f"
+                ),
+                template='plotly_dark',
+                height=800,
+                width=1300,
+                dragmode='zoom',  # Enables zooming
+                hovermode='x unified'  # Unified hover mode for better interactivity
+)
+fig.update_xaxes(rangeselector=dict(
+                    buttons=list([
+                        dict(count=1, label="1d", step="day", stepmode="backward"),
+                        dict(count=7, label="1w", step="day", stepmode="backward"),
+                        dict(count=1, label="1m", step="month", stepmode="backward"),
+                        dict(count=6, label="6m", step="month", stepmode="backward"),
+                        dict(count=1, label="YTD", step="year", stepmode="todate"),
+                        dict(count=1, label="1y", step="year", stepmode="backward"),
+                        dict(step="all")
+                    ])
+                ),
+                rangeslider=dict(visible=True),
+                type='date')
+
+# Enable y-axis zooming
+fig.update_yaxes(
+    range=[data['close'].min() * 0.95, data['close'].max() * 1.05],  # Adjust the initial visible range as desired
+    fixedrange=False  # Allow zooming
+)
+st.plotly_chart(fig)
+
+# Display trade history
+# List of all possible columns
+all_columns = [
+    'symbol', 'type', 'buy_price', 'sell_price', 'sell_short_price', 'buy_cover_price',
+    'buy_time', 'sell_time', 'sell_short_time', 'buy_cover_time', 'lot_size', 'profit_loss', '%Profit_Loss', 'signal'
+]
+
+# Display trade history
+if trades:
+    st.subheader("Trade History")
+    trades_df = pd.DataFrame(trades)
     
-    st.sidebar.subheader('Tolerance Parameters')
-    tolerance = st.sidebar.slider('Tolerance', min_value=0.01, max_value=0.2, value=0.05, step=0.01, key='tolerance')
-    
-    st.sidebar.subheader('Choose Algorithm')
-    option = st.sidebar.selectbox(
-        'Choose an algorithm:',
-        ('Algorithm 1', 'Algorithm 2', 'Algorithm 3', 'Algorithm 4')
-    )
-    
-    if option == 'Algorithm 1':
-        signals = generate_signals_algo_01(data, tolerance)
-    elif option == 'Algorithm 2':
-        signals = generate_signals_algo_02(data, tolerance)
-    elif option == 'Algorithm 3':
-        signals = generate_signals_algo_03(data)
-    else:
-        signals = generate_signals_algo_04(data)
-    
-    calculate_close_price_diff(signals)
-
-    st.subheader('Original Dataset')
-    with st.expander("Expand to view the original dataset"):
-        st.dataframe(data, height=500)
-
-    st.subheader('Resultant Dataset with Signals')
-    with st.expander("Expand to view the resultant dataset with signals"):
-        st.dataframe(signals, height=500)
-
-    fig = plot_data(data, signals, tolerance, option)
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader('Seaborn Line Plots for Close Price Differences')
-    fig_seaborn = plot_seaborn(signals)
-    st.pyplot(fig_seaborn)
-
+    # Filter columns to only those present in the DataFrame
+    existing_columns = [col for col in all_columns if col in trades_df.columns]
+    st.table(trades_df[existing_columns])
 else:
-    st.write("Please upload a CSV file to proceed.")
+    st.subheader("No trades executed.")
+    
+    # Create an empty DataFrame with the required columns
+    empty_df = pd.DataFrame(columns=all_columns)
+    st.table(empty_df)
