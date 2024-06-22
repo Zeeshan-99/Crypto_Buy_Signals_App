@@ -50,96 +50,113 @@ def apply_trading_strategy(data, tolerance):
     signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
     return signals
 
-# Simulate trades with dynamic lot size based on funds usage percentage
+# Simulate trades with SL and TP
 def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_percentage=100):
     balance = initial_balance
     trades = []
     active_trade = None
     trade_type = None
+    stop_loss = 0.02
+    take_profit = 0.04
 
-    for index, row in signals.iterrows():
-        close_price = data.loc[data['timestamp'] == row['timestamp'], 'close'].values[0]
-        available_funds = balance * (funds_usage_percentage / 100)
-        max_possible_lot_size = available_funds / close_price
-        
-        if max_possible_lot_size < 1:
-            lot_size = max_possible_lot_size  # If funds are insufficient, use the maximum possible lot size
-        else:
-            lot_size = int(max_possible_lot_size)  # Use integer lot size for trading
+    for i, row in data.iterrows():
+        if active_trade is not None:
+            if active_trade['type'] == 'Buy':
+                if row['close'] >= active_trade['buy_price'] * (1 + take_profit):
+                    # Take profit for buy trade
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Buy',
+                        'buy_price': active_trade['buy_price'],
+                        'sell_price': row['close'],
+                        'buy_time': active_trade['buy_time'],
+                        'sell_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': active_trade['lot_size'] * (row['close'] - active_trade['buy_price']),
+                        'signal': 'Sold bought stock Profit'
+                    })
+                    balance += active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    active_trade = None
+                elif row['close'] <= active_trade['buy_price'] * (1 - stop_loss):
+                    # Stop loss for buy trade
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Buy',
+                        'buy_price': active_trade['buy_price'],
+                        'sell_price': row['close'],
+                        'buy_time': active_trade['buy_time'],
+                        'sell_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': active_trade['lot_size'] * (row['close'] - active_trade['buy_price']),
+                        'signal': 'Sold bought stock Loss'
+                    })
+                    balance += active_trade['lot_size'] * (row['close'] - active_trade['buy_price'])
+                    active_trade = None
 
-        if row['Signal'] == 'Buy' and (active_trade is None or trade_type == 'Sell'):
-            if active_trade is not None and trade_type == 'Sell':
-                profit_loss = active_trade['lot_size'] * (active_trade['sell_short_price'] - close_price)
-                balance += profit_loss
-                trades.append({
-                    'symbol': symbol,
-                    'type': 'Sell Short',
-                    'sell_short_price': active_trade['sell_short_price'],
-                    'buy_cover_price': close_price,
-                    'sell_short_time': active_trade['sell_short_time'],
-                    'buy_cover_time': row['timestamp'],
-                    'lot_size': active_trade['lot_size'],
-                    'profit_loss': profit_loss
-                })
-            active_trade = {
-                'symbol': symbol,
-                'type': 'Buy',
-                'buy_price': close_price,
-                'buy_time': row['timestamp'],
-                'lot_size': lot_size
-            }
-            trade_type = 'Buy'
-        elif row['Signal'] == 'Sell' and (active_trade is None or trade_type == 'Buy'):
-            if active_trade is not None and trade_type == 'Buy':
-                profit_loss = active_trade['lot_size'] * (close_price - active_trade['buy_price'])
-                balance += profit_loss
-                trades.append({
-                    'symbol': symbol,
-                    'type': 'Buy',
-                    'buy_price': active_trade['buy_price'],
-                    'sell_price': close_price,
-                    'buy_time': active_trade['buy_time'],
-                    'sell_time': row['timestamp'],
-                    'lot_size': active_trade['lot_size'],
-                    'profit_loss': profit_loss
-                })
-            active_trade = {
-                'symbol': symbol,
-                'type': 'Sell Short',
-                'sell_short_price': close_price,
-                'sell_short_time': row['timestamp'],
-                'lot_size': lot_size
-            }
-            trade_type = 'Sell'
+            elif active_trade['type'] == 'Sell Short':
+                if row['close'] <= active_trade['sell_short_price'] * (1 - take_profit):
+                    # Take profit for sell short trade
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Sell Short',
+                        'sell_short_price': active_trade['sell_short_price'],
+                        'buy_cover_price': row['close'],
+                        'sell_short_time': active_trade['sell_short_time'],
+                        'buy_cover_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close']),
+                        'signal': 'Sold short stock Profit'
+                    })
+                    balance += active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    active_trade = None
+                elif row['close'] >= active_trade['sell_short_price'] * (1 + stop_loss):
+                    # Stop loss for sell short trade
+                    trades.append({
+                        'symbol': symbol,
+                        'type': 'Sell Short',
+                        'sell_short_price': active_trade['sell_short_price'],
+                        'buy_cover_price': row['close'],
+                        'sell_short_time': active_trade['sell_short_time'],
+                        'buy_cover_time': row['timestamp'],
+                        'lot_size': active_trade['lot_size'],
+                        'profit_loss': active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close']),
+                        'signal': 'Sold short stock Loss'
+                    })
+                    balance += active_trade['lot_size'] * (active_trade['sell_short_price'] - row['close'])
+                    active_trade = None
 
-    # Close any remaining active trade at the last timestamp
-    if active_trade is not None:
-        if trade_type == 'Buy':
-            current_price = data['close'].iloc[-1]
-            profit_loss = active_trade['lot_size'] * (current_price - active_trade['buy_price'])
-            trades.append({
-                'symbol': symbol,
-                'type': 'Buy',
-                'buy_price': active_trade['buy_price'],
-                'sell_price': current_price,
-                'buy_time': active_trade['buy_time'],
-                'sell_time': data['timestamp'].iloc[-1],
-                'lot_size': active_trade['lot_size'],
-                'profit_loss': profit_loss
-            })
-        elif trade_type == 'Sell':
-            current_price = data['close'].iloc[-1]
-            profit_loss = active_trade['lot_size'] * (active_trade['sell_short_price'] - current_price)
-            trades.append({
-                'symbol': symbol,
-                'type': 'Sell Short',
-                'sell_short_price': active_trade['sell_short_price'],
-                'buy_cover_price': current_price,
-                'sell_short_time': active_trade['sell_short_time'],
-                'buy_cover_time': data['timestamp'].iloc[-1],
-                'lot_size': active_trade['lot_size'],
-                'profit_loss': profit_loss
-            })
+        if not active_trade and not signals.empty:
+            signal = signals[signals['timestamp'] == row['timestamp']]
+            if not signal.empty:
+                signal = signal.iloc[0]
+                close_price = row['close']
+                available_funds = balance * (funds_usage_percentage / 100)
+                max_possible_lot_size = available_funds / close_price
+                
+                if max_possible_lot_size < 1:
+                    lot_size = max_possible_lot_size
+                else:
+                    lot_size = int(max_possible_lot_size)
+
+                if signal['Signal'] == 'Buy':
+                    active_trade = {
+                        'symbol': symbol,
+                        'type': 'Buy',
+                        'buy_price': close_price,
+                        'buy_time': row['timestamp'],
+                        'lot_size': lot_size
+                    }
+                    trade_type = 'Buy'
+
+                elif signal['Signal'] == 'Sell':
+                    active_trade = {
+                        'symbol': symbol,
+                        'type': 'Sell Short',
+                        'sell_short_price': close_price,
+                        'sell_short_time': row['timestamp'],
+                        'lot_size': lot_size
+                    }
+                    trade_type = 'Sell Short'
 
     final_balance = balance
     return initial_balance, final_balance, trades
@@ -267,7 +284,7 @@ st.plotly_chart(fig)
 # List of all possible columns
 all_columns = [
     'symbol', 'type', 'buy_price', 'sell_price', 'sell_short_price', 'buy_cover_price',
-    'buy_time', 'sell_time', 'sell_short_time', 'buy_cover_time', 'lot_size', 'profit_loss'
+    'buy_time', 'sell_time', 'sell_short_time', 'buy_cover_time', 'lot_size', 'profit_loss', 'signal'
 ]
 
 # Display trade history
