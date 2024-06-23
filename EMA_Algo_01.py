@@ -86,7 +86,9 @@ def apply_trading_strategy_02(data, tolerance):
     return signals
 
 
-def apply_trading_strategy_03(data, ema_periods=[20, 50, 100], tolerance=0.01, lookback=3):
+def apply_trading_strategy_03(data, tolerance):
+    ema_periods = [20, 50, 100]
+    lookback = 3
     ema_cols = [f'EMA_{period}' for period in ema_periods]
     
     for col in ema_cols:
@@ -94,9 +96,12 @@ def apply_trading_strategy_03(data, ema_periods=[20, 50, 100], tolerance=0.01, l
             raise ValueError(f"Data does not contain required EMA column: {col}")
     
     data['Signal'] = ''
-    data['EMAs_Converge'] = all(
-        abs(data[ema_cols[i]] / data[ema_cols[j]] - 1) <= tolerance 
-        for i in range(len(ema_cols)) for j in range(i+1, len(ema_cols))
+    
+    # Check for EMA convergence
+    data['EMAs_Converge'] = (
+        (abs(data['EMA_20'] / data['EMA_50'] - 1) <= tolerance) &
+        (abs(data['EMA_20'] / data['EMA_100'] - 1) <= tolerance) &
+        (abs(data['EMA_50'] / data['EMA_100'] - 1) <= tolerance)
     )
     
     in_signal = False
@@ -104,12 +109,12 @@ def apply_trading_strategy_03(data, ema_periods=[20, 50, 100], tolerance=0.01, l
 
     for i in range(lookback, len(data) - lookback):
         if data['EMAs_Converge'].iloc[i]:
-            if all(data['Close'].iloc[i-j] < data['Close'].iloc[i-j+1] for j in range(lookback, 0, -1)) and \
+            if all(data['close'].iloc[i-j] < data['close'].iloc[i-j+1] for j in range(lookback, 0, -1)) and \
                all(data[ema_cols[k]].iloc[i-1] > data[ema_cols[k]].iloc[i-2] for k in range(len(ema_cols))):
                 data.at[i + 1, 'Signal'] = 'Buy'
                 in_signal = True
                 last_signal = 'Buy'
-            elif all(data['Close'].iloc[i-j] > data['Close'].iloc[i-j+1] for j in range(lookback, 0, -1)) and \
+            elif all(data['close'].iloc[i-j] > data['close'].iloc[i-j+1] for j in range(lookback, 0, -1)) and \
                  all(data[ema_cols[k]].iloc[i-1] < data[ema_cols[k]].iloc[i-2] for k in range(len(ema_cols))):
                 data.at[i + 1, 'Signal'] = 'Sell'
                 in_signal = True
@@ -122,7 +127,6 @@ def apply_trading_strategy_03(data, ema_periods=[20, 50, 100], tolerance=0.01, l
 
     signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
     return signals
-
 
 # Simulate trades with SL and TP
 def simulate_trades(data, signals, symbol, initial_balance=10000, funds_usage_percentage=100):
@@ -377,7 +381,10 @@ fig.update_yaxes(
 )
 st.plotly_chart(fig)
 
-# Display trade history
+# Display trade history in Json
+st.write('Trades:', trades)
+st.write(f'Final Balance: {final_balance:.2f} USDT')
+# Display trade history in tabular format
 # List of all possible columns
 all_columns = [
     'symbol', 'type', 'buy_price', 'sell_price', 'sell_short_price', 'buy_cover_price',
