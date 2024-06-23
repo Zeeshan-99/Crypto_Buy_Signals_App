@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 
 # Function to fetch data from Binance
 @st.cache_data
-def fetch_data(symbol, timeframe, limit=1000):
+def fetch_data(symbol, timeframe, limit=995):
     exchange = ccxt.binance()
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     data = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
