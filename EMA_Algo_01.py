@@ -50,7 +50,6 @@ def apply_trading_strategy_01(data, tolerance):
     signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
     return signals
 
-
 def apply_trading_strategy_02(data, tolerance):
     data['Signal'] = ''
     data['EMAs_Converge'] = ((abs(data['EMA_20'] / data['EMA_50'] - 1) <= tolerance) &
@@ -84,7 +83,6 @@ def apply_trading_strategy_02(data, tolerance):
 
     signals = data[data['Signal'].isin(['Buy', 'Sell'])].reset_index(drop=True)
     return signals
-
 
 def apply_trading_strategy_03(data, tolerance):
     ema_periods = [20, 50, 100]
