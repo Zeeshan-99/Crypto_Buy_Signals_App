@@ -2,12 +2,12 @@ Auto Crypto Trading Bot
 This project is an advanced auto crypto trading bot built using Python and Streamlit, designed to trade on the Binance exchange. It employs various technical indicators and trading strategies to automate cryptocurrency trading efficiently.
 
 Table of Contents
-Features
-Installation
-Usage
-Trading Strategies
-Simulation
-Visualization
+(1) Features
+(2) Installation
+(3) Usage
+(3) Trading Strategies
+(4) Simulation
+(5) Visualization
 Contributing
 License
 Features
